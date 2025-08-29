@@ -1,42 +1,68 @@
 #!/bin/bash
 
-# Check for two arguments
-if [ $# -ne 2 ]; then
-    echo "Usage: $0 <folder_with_map_files> <output_base_folder>"
+if [ "$#" -ne 2 ]; then
+    read -p "Enter path to txt file with URLs: " urlFile
+    read -p "Enter output folder path: " outputFolder
+else
+    urlFile="$1"
+    outputFolder="$2"
+fi
+
+urlFile=$(realpath "$urlFile")
+outputFolder="${outputFolder%/}"
+
+if [ ! -f "$urlFile" ]; then
+    echo "Error: File '$urlFile' not found."
     exit 1
 fi
 
-INPUT_FOLDER="$1"
-OUTPUT_BASE="$2"
+tempFolder=$(mktemp -d)
+mapFolder="$tempFolder/maps"
 
-# Check if input folder exists
-if [ ! -d "$INPUT_FOLDER" ]; then
-    echo "Error: Folder '$INPUT_FOLDER' does not exist."
-    exit 1
-fi
+mkdir -p "$mapFolder"
+grep -Ei '\.map' "$urlFile" > tmp
 
-# Create output folder if it doesn't exist
-mkdir -p "$OUTPUT_BASE"
+while IFS= read -r url; do
+    filename=$(echo $url | awk -F'://' '{print $2}' | sed 's/\//-/g' )
+    wget -q -O "$mapFolder/$filename" "$url"
+done < tmp
 
-# Flag to check if any map files exist
-found_map_files=false
+rm tmp
 
-# Loop through all .map files
-for mapfile in "$INPUT_FOLDER"/*.map; do
-    [ -e "$mapfile" ] || continue
+files=()
 
-    found_map_files=true
-
-    echo "Processing: $mapfile"
-
-    # Dump all sources into shared OUTPUT_BASE
-    php ~/tools/extract-maps.php "$mapfile" "$OUTPUT_BASE"
-
-    echo "Extracted sources to: $OUTPUT_BASE"
-    echo "---------------------------------------"
-done
-
-if [ "$found_map_files" = false ]; then
-    echo "No .map files found in '$INPUT_FOLDER'"
+mapFiles=$(find "$mapFolder" -type f -name "*.map")
+if [ -z "$mapFiles" ]; then
+    echo "No .map files downloaded."
     exit 0
 fi
+
+while IFS= read -r mapFile; do
+    sources=$(jq -r '.sources[]' "$mapFile")
+    contents=$(jq -r '.sourcesContent[]' "$mapFile")
+
+    IFS=$'\n' read -rd '' -a sources_array <<< "$sources"
+    IFS=$'\n' read -rd '' -a contents_array <<< "$contents"
+
+    for i in "${!sources_array[@]}"; do
+        src="${sources_array[$i]}"
+        content="${contents_array[$i]}"
+
+        target_dir="$outputFolder/$(dirname "$src")"
+        mkdir -p "$target_dir"
+
+        target_file="$target_dir/$(basename "$src")"
+        echo -n "$content" > "$target_file"
+
+        files+=("$target_file")
+    done
+done <<< "$mapFiles"
+
+echo "All Source codes have been extracted from map file:"
+echo "("
+for i in "${!files[@]}"; do
+    echo "    [$i] => ${files[$i]}"
+done
+echo ")"
+
+rm -rf "$tempFolder"
