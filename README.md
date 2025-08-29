@@ -1,5 +1,7 @@
-- Usage 1
+* sudo apt-get install jq
 * chmod +x unpack_map.sh
+  
+- Usage 1
 * ./unpack_map.sh URLs.txt outputFolder
 
 - Usage 2
