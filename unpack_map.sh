@@ -20,49 +20,62 @@ tempFolder=$(mktemp -d)
 mapFolder="$tempFolder/maps"
 
 mkdir -p "$mapFolder"
-grep -Ei '\.map' "$urlFile" > tmp
+grep -Ei '\.map' "$urlFile" > "$tempFolder/urls.txt"
 
+# Download .map files
 while IFS= read -r url; do
-    filename=$(echo $url | awk -F'://' '{print $2}' | sed 's/\//-/g' )
+    filename=$(echo "$url" | awk -F'://' '{print $2}' | sed 's/[\/:?&=]/-/g')
     wget -q -O "$mapFolder/$filename" "$url"
-done < tmp
-
-rm tmp
+done < "$tempFolder/urls.txt"
 
 files=()
 
-mapFiles=$(find "$mapFolder" -type f -name "*.map")
-if [ -z "$mapFiles" ]; then
-    echo "No .map files downloaded."
-    exit 0
-fi
+# Process each downloaded .map file
+find "$mapFolder" -type f -name "*.map" | while IFS= read -r mapFile; do
+    # Check if file is valid JSON and has required keys
+    if ! jq -e '.sources and .sourcesContent' "$mapFile" > /dev/null 2>&1; then
+        echo "Skipping invalid or incomplete map file: $mapFile"
+        continue
+    fi
 
-while IFS= read -r mapFile; do
-    sources=$(jq -r '.sources[]' "$mapFile")
-    contents=$(jq -r '.sourcesContent[]' "$mapFile")
+    sources_count=$(jq '.sources | length' "$mapFile")
+    content_count=$(jq '.sourcesContent | length' "$mapFile")
 
-    IFS=$'\n' read -rd '' -a sources_array <<< "$sources"
-    IFS=$'\n' read -rd '' -a contents_array <<< "$contents"
+    # Check if array lengths match
+    if [ "$sources_count" -ne "$content_count" ]; then
+        echo "Mismatch in sources and sourcesContent in $mapFile, skipping..."
+        continue
+    fi
 
-    for i in "${!sources_array[@]}"; do
-        src="${sources_array[$i]}"
-        content="${contents_array[$i]}"
+    for ((i=0; i<sources_count; i++)); do
+        src=$(jq -r ".sources[$i]" "$mapFile")
+        content=$(jq -r ".sourcesContent[$i]" "$mapFile")
 
-        target_dir="$outputFolder/$(dirname "$src")"
+        # Skip empty content
+        if [ -z "$content" ] || [ "$content" = "null" ]; then
+            continue
+        fi
+
+        # Sanitize and write file
+        safe_src=$(echo "$src" | sed 's#^\./##')  # remove leading ./
+        target_dir="$outputFolder/$(dirname "$safe_src")"
         mkdir -p "$target_dir"
 
-        target_file="$target_dir/$(basename "$src")"
-        echo -n "$content" > "$target_file"
-
+        target_file="$target_dir/$(basename "$safe_src")"
+        echo "$content" > "$target_file"
         files+=("$target_file")
     done
-done <<< "$mapFiles"
-
-echo "All Source codes have been extracted from map file:"
-echo "("
-for i in "${!files[@]}"; do
-    echo "    [$i] => ${files[$i]}"
 done
-echo ")"
 
+# Print extracted files
+if [ "${#files[@]}" -eq 0 ]; then
+    echo "No source files were extracted."
+else
+    echo "Extracted source files:"
+    for i in "${!files[@]}"; do
+        echo "  [$i] ${files[$i]}"
+    done
+fi
+
+# Cleanup
 rm -rf "$tempFolder"
